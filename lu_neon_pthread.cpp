@@ -2,6 +2,7 @@
 #include <chrono>
 #include <pthread.h>
 #include <cstdlib>
+#include <vector> 
 
 #if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
@@ -11,8 +12,10 @@
 
 using namespace std;
 
-const int N = 2048; 
-alignas(16) float m[N][N];
+const int MAX_N = 2048; 
+alignas(16) float m[MAX_N][MAX_N];
+
+int current_N; 
 
 const int NUM_THREADS = 8;
 
@@ -24,14 +27,14 @@ struct ThreadParam {
 };
 
 void init_matrix() {
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < current_N; i++) {
         m[i][i] = 1.0;
-        for (int j = i + 1; j < N; j++) m[i][j] = rand() % 10;
+        for (int j = i + 1; j < current_N; j++) m[i][j] = rand() % 10;
         for (int j = 0; j < i; j++) m[i][j] = 0;
     }
-    for (int k = 0; k < N; k++) {
-        for (int i = k + 1; i < N; i++) {
-            for (int j = 0; j < N; j++) m[i][j] += m[k][j];
+    for (int k = 0; k < current_N; k++) {
+        for (int i = k + 1; i < current_N; i++) {
+            for (int j = 0; j < current_N; j++) m[i][j] += m[k][j];
         }
     }
 }
@@ -40,31 +43,31 @@ void* threadFunc(void* param) {
     ThreadParam* p = (ThreadParam*)param;
     int t_id = p->t_id;
 
-    for (int k = 0; k < N; ++k) {
+    for (int k = 0; k < current_N; ++k) {
         
         if (t_id == 0) {
             float pivot = m[k][k];
             float32x4_t vt = vdupq_n_f32(pivot);
             int j = k + 1;
 
-            for (; j + 4 <= N; j += 4) {
+            for (; j + 4 <= current_N; j += 4) {
                 float32x4_t va = vld1q_f32(&m[k][j]); 
 
                 va = vdivq_f32(va, vt);
                 vst1q_f32(&m[k][j], va); 
             }
-            for (; j < N; ++j) m[k][j] = m[k][j] / pivot;
+            for (; j < current_N; ++j) m[k][j] = m[k][j] / pivot;
             m[k][k] = 1.0;
         }
         
         pthread_barrier_wait(&barrier_Divsion);
 
-        for (int i = k + 1 + t_id; i < N; i += NUM_THREADS) {
+        for (int i = k + 1 + t_id; i < current_N; i += NUM_THREADS) {
             float factor = m[i][k];
             float32x4_t vaik = vdupq_n_f32(factor);
             int j = k + 1;
             
-            for (; j + 4 <= N; j += 4) {
+            for (; j + 4 <= current_N; j += 4) {
                 float32x4_t vakj = vld1q_f32(&m[k][j]);
                 float32x4_t vaij = vld1q_f32(&m[i][j]);            
                 float32x4_t vx = vmulq_f32(vakj, vaik);
@@ -72,7 +75,7 @@ void* threadFunc(void* param) {
                 
                 vst1q_f32(&m[i][j], vaij);
             }
-            for (; j < N; ++j) m[i][j] = m[i][j] - factor * m[k][j];
+            for (; j < current_N; ++j) m[i][j] = m[i][j] - factor * m[k][j];
             m[i][k] = 0.0;
         }
 
@@ -83,34 +86,47 @@ void* threadFunc(void* param) {
 }
 
 int main() {
-    cout << "矩阵规模: " << N << " x " << N << " (ARM NEON + Pthread静态线程池)" << endl;
-    cout << "工作线程数: " << NUM_THREADS << endl;
+    cout << "--- ARM NEON + Pthread 静态线程池 (多规模自动化测试) ---" << endl;
+    cout << "工作线程数为: " << NUM_THREADS << endl << endl;
 
-    init_matrix();
+    vector<int> test_sizes = {512, 1024, 2048};
 
-    pthread_barrier_init(&barrier_Divsion, NULL, NUM_THREADS);
-    pthread_barrier_init(&barrier_Elimination, NULL, NUM_THREADS);
+    for (int n : test_sizes) {
+        current_N = n;
+        cout << "正在测试矩阵规模: " << current_N << " x " << current_N << " ..." << endl;
 
-    pthread_t handles[NUM_THREADS];
-    ThreadParam params[NUM_THREADS];
+        init_matrix();
 
-    auto start = chrono::high_resolution_clock::now();
+        // 为当前的测试初始化 Barrier
+        pthread_barrier_init(&barrier_Divsion, NULL, NUM_THREADS);
+        pthread_barrier_init(&barrier_Elimination, NULL, NUM_THREADS);
 
-    for (int t_id = 0; t_id < NUM_THREADS; t_id++) {
-        params[t_id].t_id = t_id;
-        pthread_create(&handles[t_id], NULL, threadFunc, (void*)&params[t_id]);
+        pthread_t handles[NUM_THREADS];
+        ThreadParam params[NUM_THREADS];
+
+        auto start = chrono::high_resolution_clock::now();
+
+        // 创建线程
+        for (int t_id = 0; t_id < NUM_THREADS; t_id++) {
+            params[t_id].t_id = t_id;
+            pthread_create(&handles[t_id], NULL, threadFunc, (void*)&params[t_id]);
+        }
+
+        // 回收线程
+        for (int t_id = 0; t_id < NUM_THREADS; t_id++) {
+            pthread_join(handles[t_id], NULL);
+        }
+
+        auto end = chrono::high_resolution_clock::now();
+        double time = chrono::duration<double, milli>(end - start).count();
+        
+        cout << "-> ARM 平台 Pthread 平均耗时: " << time << " ms\n" << endl;
+
+        // 销毁 Barrier，准备下一轮不同规模的测试
+        pthread_barrier_destroy(&barrier_Divsion);
+        pthread_barrier_destroy(&barrier_Elimination);
     }
 
-    for (int t_id = 0; t_id < NUM_THREADS; t_id++) {
-        pthread_join(handles[t_id], NULL);
-    }
-
-    auto end = chrono::high_resolution_clock::now();
-    double time = chrono::duration<double, milli>(end - start).count();
-    cout << "ARM 平台 Pthread 平均耗时: " << time << " ms" << endl;
-
-    pthread_barrier_destroy(&barrier_Divsion);
-    pthread_barrier_destroy(&barrier_Elimination);
-
+    cout << "测试完毕" << endl;
     return 0;
 }
