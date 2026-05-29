@@ -1,48 +1,52 @@
-# SIMD 编程实验：高斯消去与 Gröbner 基计算
+# 并行程序设计：多线程编程实验
 
-本仓库包含了并行程序设计 SIMD 实验的全部核心源代码。
-代码涵盖了基础的普通高斯消去（串行、自动向量化、手工 AVX 优化）以及期末进阶探索的特殊高斯消去（Gröbner 基计算）。
+助教您好！本仓库包含了并行程序设计第二次实验（多线程编程）的核心源代码。
+本次实验以普通高斯消去法（LU分解）为载体，深度融合了底层向量化指令集（x86 AVX2 / ARM NEON）与共享内存多线程技术（Pthread / OpenMP），并完成了跨体系架构的性能对比。
 
-## 代码文件说明
+## 代码文件架构与核心优化点
 
-本仓库共包含 3 份核心 C++ 源代码文件，分别对应实验的不同测试与优化阶段：
+本仓库包含以下 3 份核心源代码文件，分别针对不同的并行范式与硬件平台进行了深度定制：
 
-### 1. `lu_auto.cpp` (基准测试与自动向量化)
-- **用途**：作为实验性能对比的 Baseline。
-- **内容**：包含了没有任何优化的纯串行普通高斯消去算法。
-- **实验目标**：结合特定的编译参数，用于测试“纯串行”与“GCC编译器自动向量化”的性能差异。
+### 1. `lu_pthread.cpp` (x86 平台: Pthread 极致优化版)
+- **底层向量化**：采用 256-bit AVX2 指令集（`_mm256_loadu_ps` 等）榨取单核浮点吞吐极限。
+- **静态线程池架构**：抛弃了在 $O(N)$ 外层循环中频繁创建/销毁线程的做法，通过 `pthread_create` 在程序伊始构建静态线程池。
+- **任务分配策略**：采用 **静态循环划分 (Cyclic Partitioning)** (`i = k + 1 + t_id; i += NUM_THREADS`)。该策略实现了完美的负载均衡，避免了全局任务队列的锁竞争，且在物理内存上天然隔离，**彻底规避了多核写入时的伪共享（False Sharing）问题**。
+- **同步机制**：使用 `pthread_barrier_t` 实施低开销的系统级屏障同步。
 
-### 2. `lu_avx.cpp` (手工 AVX 向量化与对齐策略)
-- **用途**：基础要求的代码。
-- **内容**：使用 256-bit AVX/AVX2 Intrinsics 手工优化的普通高斯消去算法。
-- **实验目标**：代码内部实现了`LU_AVX_Unaligned`和`LU_AVX_Aligned`两个函数，通过内存边界预处理，对比了`_mm256_loadu_ps`与`_mm256_load_ps`在现代CPU微架构下的性能与指令开销差异。
+### 2. `lu_omp_avx.cpp` (x86 平台: OpenMP 扩展性测试版)
+- **调度策略探索**：为了应对高斯消去步计算量呈二次方递减的“负载不均”特征，在内层消去循环中采用了 `schedule(guided)` 引导调度/动态调度机制。
+- **扩展性探究**：内置了 1~20 线程的自动遍历测算逻辑，用于生成不同并发度下的阿姆达尔性能退化曲线（U型曲线）。
 
-### 3. `groebner.cpp` (进阶探索：特殊高斯消去)
-- **用途**：期末研究探索的代码。
-- **内容**：针对密码学中 Gröbner 基计算（GF(2) 有限域运算）编写的大规模稀疏矩阵消去程序。
-- **实验目标**：摒弃传统浮点数组，设计了 `BitRow` 长位向量进行状态压缩。采用了 **“宏观 OpenMP 动态调度并发 + 微观 `#pragma omp simd` 向量化批量异或”** 的双层并行策略，并引入临界区双重检查锁避免数据竞态。
+### 3. `lu_neon_pthread.cpp` (ARM 平台: 鲲鹏服务器适配版)
+- **跨架构移植**：为满足进阶要求，将 x86 的 AVX 指令全套翻译重构为 **ARM NEON 128-bit 向量化指令**（如 `vld1q_f32`, `vdivq_f32`, `vsubq_f32`）。
+- **多维度测试**：内置了不同矩阵规模（N=512, 1024, 2048）的缩放性自动化测试逻辑，用于验证大规模矩阵下 $O(N^3)$ 复杂度的耗时斜率。
 
 ---
 
-## 编译与运行说明
+## 编译与运行指南
 
-环境要求：支持 AVX2 指令集的 x86 CPU，以及支持 OpenMP 的 GCC 编译器。
-在 Linux 或 Windows 终端下，推荐使用以下命令进行编译和运行：
+本项目严格区分 x86 架构与 ARM 架构。请根据当前硬件环境选择相应的编译指令：
 
+### 本地 x86 PC 环境 (Intel/AMD)
+
+**测试 Pthread 静态线程池版本：**
 ```bash
-测试 1：纯串行与自动向量化对比
-# 纯串行编译
-g++ lu_auto.cpp -O0 -o run_baseline
-./run_baseline
+g++ lu_pthread.cpp -O2 -mavx2 -pthread -o run_pthread
+./run_pthread
+```
 
-# 自动向量化编译
-g++ lu_auto.cpp -O3 -mavx2 -ftree-vectorize -o run_auto
-./run_auto
+**测试 OpenMP 扩展性版本：**
+g++ lu_omp_avx.cpp -O2 -mavx2 -fopenmp -o run_omp
+```bash
+./run_omp
+```
+### 鲲鹏服务器环境 (ARM aarch64)
 
-测试 2：手工 AVX 对齐与不对齐策略
-g++ lu_avx.cpp -O2 -mavx2 -o run_avx
-./run_avx
+**测试 ARM NEON 跨平台版本：**
+```bash
+g++ lu_neon_pthread.cpp -O2 -march=armv8-a -pthread -o run_neon
+./run_neon
+```
 
-测试 3：Gröbner 基计算 (多线程+SIMD)
-g++ groebner.cpp -O3 -mavx2 -fopenmp -o run_groebner
-./run_groebner
+关于 Pthread 与 OpenMP 的系统级调度开销对比、跨架构的算力降维分析，以及基于 Intel VTune Profiler 抓取的信号量阻塞与同步开销底层剖析，均已在配套的**《实验研究报告》**中进行了论述，敬请查阅。
+
