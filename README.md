@@ -36,8 +36,9 @@ g++ lu_pthread.cpp -O2 -mavx2 -pthread -o run_pthread
 ```
 
 **测试 OpenMP 扩展性版本：**
-g++ lu_omp_avx.cpp -O2 -mavx2 -fopenmp -o run_omp
+
 ```bash
+g++ lu_omp_avx.cpp -O2 -mavx2 -fopenmp -o run_omp
 ./run_omp
 ```
 ### 鲲鹏服务器环境 (ARM aarch64)
@@ -48,5 +49,4 @@ g++ lu_neon_pthread.cpp -O2 -march=armv8-a -pthread -o run_neon
 ./run_neon
 ```
 
-关于 Pthread 与 OpenMP 的系统级调度开销对比、跨架构的算力降维分析，以及基于 Intel VTune Profiler 抓取的信号量阻塞与同步开销底层剖析，均已在配套的**《实验研究报告》**中进行了论述，敬请查阅。
 
